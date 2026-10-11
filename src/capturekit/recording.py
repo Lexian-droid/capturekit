@@ -18,6 +18,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,6 +182,7 @@ class _TrackWriter:
         self._lock = threading.Lock()
         self._on_error = on_error
         self._failed = False
+        self._aborted = False
         self._thread = threading.Thread(
             target=self._run, name=f"capturekit-track-{label}", daemon=True
         )
@@ -216,17 +218,24 @@ class _TrackWriter:
                     self.pipe.write(data)
         except BaseException as exc:
             self._failed = True
-            self._on_error(exc)
+            if not self._aborted:  # after abort() the cause is reported by FFmpeg's exit
+                self._on_error(exc)
         finally:
             self.pipe.close()
 
     def finish(self) -> None:
         self._q.put(None)
 
+    def abort(self) -> None:
+        """Stop writing; unblocks connect() if FFmpeg never opened the pipe."""
+        self._aborted = True
+        self._failed = True
+        self.pipe.abort()
+
     def join(self, timeout_s: float) -> None:
         self._thread.join(timeout_s)
         if self._thread.is_alive():
-            self.pipe.abort()  # unblock connect() if FFmpeg never opened the pipe
+            self.abort()
             self._thread.join(2)
 
 
@@ -289,6 +298,8 @@ class Recorder:
         self._state_lock = threading.RLock()
         self._timeline = Timeline()
         self._stop_evt = threading.Event()
+        self._stop_requested = threading.Event()
+        self._audio_closed = False
         self._done = threading.Event()
         self._error: BaseException | None = None
         self._fatal = False
@@ -298,6 +309,7 @@ class Recorder:
         self._start_wall = 0
         self._end_media_ns: int | None = None
         self._shutdown_started = False
+        self._output_preexisted = True
 
         # video
         self._video_thread: threading.Thread | None = None
@@ -339,11 +351,33 @@ class Recorder:
         try:
             self._start()
         except BaseException as exc:
-            self._error = exc
-            self._fatal = True
-            self._shutdown()
+            with self._state_lock:
+                self._error, self._fatal = exc, True
+            self._shutdown(time.monotonic() + 60)
+            self._remove_partial_output()
             raise
+        # stop() or a worker failure during STARTING only *requests* a stop;
+        # the starting thread performs it once initialisation has finished.
+        with self._state_lock:
+            aborted = self._stop_requested.is_set()
+            if aborted:
+                self._set_state(RecorderState.STOPPING)
+        if aborted:
+            self._shutdown(time.monotonic() + 60)
+            if self._fatal and self._error is not None:
+                self._remove_partial_output()
+                raise self._error
         return self
+
+    def _remove_partial_output(self) -> None:
+        """Delete an output file created by a start that failed (never a file
+        that existed before start; overwrite=False guarantees it was new)."""
+        if self.output is None or self._ffmpeg is None or self._output_preexisted:
+            return
+        try:
+            Path(self.output).unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not remove partial output %s: %s", self.output, exc)
 
     def pause(self) -> None:
         with self._state_lock:
@@ -366,19 +400,17 @@ class Recorder:
         under ``TargetLostPolicy.STOP`` is reported in ``result.error`` and via
         ``on_error`` but does not raise.
         """
+        deadline = time.monotonic() + timeout
         with self._state_lock:
             if self._state is RecorderState.IDLE:
                 raise RecorderStateError("recorder was never started")
-            run_here = self._state in (
-                RecorderState.RECORDING,
-                RecorderState.PAUSED,
-                RecorderState.STARTING,
-            )
+            self._stop_requested.set()
+            run_here = self._state in (RecorderState.RECORDING, RecorderState.PAUSED)
             if run_here:
                 self._set_state(RecorderState.STOPPING)
         if run_here:
-            self._shutdown()
-        if not self._done.wait(timeout):
+            self._shutdown(deadline)
+        if not self._done.wait(max(0.0, deadline - time.monotonic())):
             raise CaptureTimeoutError("recorder did not stop in time")
         if self._fatal and self._error is not None:
             raise self._error
@@ -400,6 +432,8 @@ class Recorder:
             except BaseException:
                 if et is None:
                     raise
+                # The body's exception propagates; never drop ours silently.
+                log.exception("Recorder.stop() failed while handling another exception")
 
     @property
     def stats(self) -> RecordingStats:
@@ -481,14 +515,26 @@ class Recorder:
         """Called from worker threads: report and stop asynchronously."""
         self._report_error(exc, fatal)
         with self._state_lock:
-            if self._state not in (
-                RecorderState.RECORDING,
-                RecorderState.PAUSED,
-                RecorderState.STARTING,
-            ):
-                return
+            self._stop_requested.set()
+            if self._state not in (RecorderState.RECORDING, RecorderState.PAUSED):
+                return  # STARTING: start() performs the shutdown; else already stopping
             self._set_state(RecorderState.STOPPING)
-        threading.Thread(target=self._shutdown, name="capturekit-shutdown", daemon=True).start()
+        threading.Thread(
+            target=self._shutdown,
+            args=(time.monotonic() + 120,),
+            name="capturekit-shutdown",
+            daemon=True,
+        ).start()
+
+    def _on_audio_error(self, exc: BaseException) -> None:
+        if isinstance(exc, TargetLostError) and (
+            self.config.on_target_lost is TargetLostPolicy.CONTINUE
+        ):
+            # e.g. headset unplugged: keep recording; the clock heartbeat fills
+            # this track with silence.
+            self._report_error(exc, fatal=False)
+            return
+        self._fail(exc, fatal=not isinstance(exc, TargetLostError))
 
     def _start(self) -> None:
         cfg = self.config
@@ -499,7 +545,8 @@ class Recorder:
             out = Path(self.output)
             if not out.parent.is_dir():
                 raise FileNotFoundError(f"output directory {out.parent} does not exist")
-            if out.exists() and not cfg.overwrite:
+            self._output_preexisted = out.exists()
+            if self._output_preexisted and not cfg.overwrite:
                 raise FileExistsError(f"{out} exists (set RecordingConfig.overwrite=True)")
 
         if self.video_source is not None:
@@ -511,6 +558,8 @@ class Recorder:
                 raise CaptureTimeoutError("video source did not start in time")
             if self._video_error is not None:
                 raise self._video_error
+        if self._stop_requested.is_set():
+            return
 
         api = _platform.backend()
         rate = cfg.audio_sample_rate
@@ -542,6 +591,20 @@ class Recorder:
             sink = self._mix_writer.put if self._mix_writer is not None else (lambda _b: None)
             self._mixer = AudioMixer(len(self._inputs), AUDIO_CHANNELS, sink)
 
+        if self._stop_requested.is_set():
+            return
+        # Audio sources start before FFmpeg so a source that cannot open fails
+        # before any output file exists; packets that arrive before the
+        # timeline starts are discarded by the aligners.
+        for inp in self._inputs:
+            inp.backend.start(functools.partial(self._on_packet, inp), self._on_audio_error)
+        if self._inputs:
+            self._clock_thread = threading.Thread(
+                target=self._audio_clock_main, name="capturekit-audio-clock", daemon=True
+            )
+            self._clock_thread.start()
+        if self._stop_requested.is_set():
+            return
         if self.output is not None:
             exe = ff.find_ffmpeg(cfg.encoder.ffmpeg_path)
             if self.video_source is not None:
@@ -565,21 +628,6 @@ class Recorder:
                 target=self._consumer_main, name="capturekit-encoder", daemon=True
             )
             self._consumer_thread.start()
-
-        for inp in self._inputs:
-            inp.backend.start(
-                functools.partial(self._on_packet, inp),
-                lambda exc: self._fail(
-                    exc,
-                    fatal=not isinstance(exc, TargetLostError)
-                    or self.config.on_target_lost is TargetLostPolicy.STOP,
-                ),
-            )
-        if self._inputs:
-            self._clock_thread = threading.Thread(
-                target=self._audio_clock_main, name="capturekit-audio-clock", daemon=True
-            )
-            self._clock_thread.start()
 
         with self._state_lock:
             self._start_wall = now_ns()
@@ -759,23 +807,28 @@ class Recorder:
 
     # -- audio -------------------------------------------------------------------
     def _on_packet(self, inp: _AudioInput, pkt: AudioPacket) -> None:
+        if self._audio_closed:
+            return  # a source thread outlived stop(); its data is past the end
         with inp.lock:
             blocks = inp.aligner.push(pkt.data, pkt.timestamp_ns, pkt.discontinuity)
             self._emit_audio(inp, blocks)
 
     def _emit_audio(self, inp: _AudioInput, blocks: list[Samples]) -> None:
+        # The aligner has already advanced `written` past all of `blocks`.
+        pos = inp.aligner.written - sum(len(b) for b in blocks)
         for b in blocks:
             if not len(b):
                 continue
+            start, pos = pos, pos + len(b)
+            b.flags.writeable = False  # shared by writer, mixer and callbacks
             if inp.writer is not None:
                 inp.writer.put(b)
             if self._mixer is not None:
                 self._mixer.push(inp.index, b)
             if self._on_audio is not None and self._dispatcher is not None:
-                pos = inp.aligner.written - len(b)
                 chunk = AudioChunk(
                     b,
-                    pos * NS_PER_S // self.config.audio_sample_rate,
+                    start * NS_PER_S // self.config.audio_sample_rate,
                     self.config.audio_sample_rate,
                     inp.name,
                 )
@@ -789,30 +842,46 @@ class Recorder:
                     self._emit_audio(inp, inp.aligner.heartbeat(now))
 
     # -- shutdown -------------------------------------------------------------------
-    def _shutdown(self) -> None:
+    def _shutdown(self, deadline: float) -> None:
         with self._state_lock:
             already = self._shutdown_started
             self._shutdown_started = True
         if already:
-            self._done.wait()
+            self._done.wait(max(0.0, deadline - time.monotonic()))
             return
         try:
-            self._shutdown_inner()
+            self._shutdown_inner(deadline)
         finally:
             with self._state_lock:
                 self._set_state(
                     RecorderState.FAILED if self._fatal and self._error else RecorderState.STOPPED
                 )
+            # Set before closing the dispatcher: a user callback blocked in
+            # stop() must be released before we join the dispatcher thread.
+            self._done.set()
             if self._dispatcher is not None:
                 self._dispatcher.close()
-            self._done.set()
 
-    def _shutdown_inner(self) -> None:
+    def _step(self, what: str, fn: Callable[[], object]) -> None:
+        """Run one shutdown stage; record failures but always continue."""
+        try:
+            fn()
+        except BaseException as exc:
+            log.exception("shutdown stage %r failed", what)
+            self._report_error(exc, fatal=True)
+
+    @staticmethod
+    def _left(deadline: float, cap: float) -> float:
+        return max(0.1, min(cap, deadline - time.monotonic()))
+
+    def _shutdown_inner(self, deadline: float) -> None:
         end_wall = now_ns()
         final_media = self._timeline.stop(end_wall) if self._timeline.started else 0
         self._stop_evt.set()
-        if self._video_thread is not None and self._video_thread is not threading.current_thread():
-            self._video_thread.join(15)
+        self._stop_requested.set()
+        vt = self._video_thread
+        if vt is not None and vt is not threading.current_thread():
+            vt.join(self._left(deadline, 15))
         self._queue.close()
         if self.video_source is not None and self._timeline.started:
             end_media = int(self._slots * NS_PER_S / self.config.fps)
@@ -821,42 +890,51 @@ class Recorder:
         self._end_media_ns = end_media
 
         for inp in self._inputs:
-            try:
-                inp.backend.stop()
-            except Exception as exc:
-                self._report_error(exc, fatal=False)
+            self._step(f"stop audio {inp.name}", inp.backend.stop)
+        self._audio_closed = True
         if self._clock_thread is not None:
-            self._clock_thread.join(5)
-        if self._timeline.started:
-            for inp in self._inputs:
-                with inp.lock:
-                    self._emit_audio(inp, inp.aligner.finish(end_media))
-        if self._mixer is not None:
-            for inp in self._inputs:
-                self._mixer.finish_input(inp.index)
+            self._clock_thread.join(self._left(deadline, 5))
+
+        def finish_audio() -> None:
+            if self._timeline.started:
+                for inp in self._inputs:
+                    with inp.lock:
+                        self._emit_audio(inp, inp.aligner.finish(end_media))
+            if self._mixer is not None:
+                for inp in self._inputs:
+                    self._mixer.finish_input(inp.index)
+
+        self._step("finish audio", finish_audio)
         writers = [i.writer for i in self._inputs if i.writer is not None]
         if self._mix_writer is not None:
             writers.append(self._mix_writer)
-        for w in writers:
-            w.finish()
+        ffm = self._ffmpeg
+        try:
+            ffmpeg_gone = ffm is None or ffm.proc.poll() is not None
+            for w in writers:
+                if ffmpeg_gone:
+                    w.abort()  # FFmpeg never started or already exited
+                w.finish()
+            ct = self._consumer_thread
+            if ct is not None:
+                ct.join(self._left(deadline, 30))
+                if ct.is_alive() and ffm is not None:
+                    ffm.kill()
+                    ct.join(5)
+            for w in writers:
+                w.join(self._left(deadline, 30))
+        finally:
+            if ffm is not None:
+                self._step("wait for FFmpeg", lambda: self._finish_ffmpeg(ffm, deadline))
 
-        if self._consumer_thread is not None:
-            self._consumer_thread.join(30)
-            if self._consumer_thread.is_alive() and self._ffmpeg is not None:
-                self._ffmpeg.kill()
-                self._consumer_thread.join(5)
-        for w in writers:
-            w.join(30)
-        if self._ffmpeg is not None:
-            rc = self._ffmpeg.wait(60)
-            if rc != 0:
-                self._report_error(
-                    EncoderError(
-                        "FFmpeg exited with an error",
-                        stderr_tail=self._ffmpeg.stderr_tail,
-                        returncode=rc,
-                    ),
-                    fatal=True,
-                )
-            elif self._ffmpeg.stderr_tail:
-                log.debug("ffmpeg output:\n%s", self._ffmpeg.stderr_tail)
+    def _finish_ffmpeg(self, ffm: ff.FFmpegProcess, deadline: float) -> None:
+        rc = ffm.wait(self._left(deadline, 60))
+        if rc != 0:
+            self._report_error(
+                EncoderError(
+                    "FFmpeg exited with an error", stderr_tail=ffm.stderr_tail, returncode=rc
+                ),
+                fatal=True,
+            )
+        elif ffm.stderr_tail:
+            log.debug("ffmpeg output:\n%s", ffm.stderr_tail)

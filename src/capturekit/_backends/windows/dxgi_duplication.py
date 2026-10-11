@@ -38,6 +38,12 @@ _DUP_ReleaseFrame = 14
 _OUT1_DuplicateOutput = 22
 
 
+class _TransientUnavailableError(CapabilityUnavailableError):
+    """Duplication temporarily unavailable (exclusive full-screen app, too many
+    duplications); recovery retries. Other CapabilityUnavailableErrors (e.g. a
+    monitor rotated mid-capture) are permanent and propagate."""
+
+
 class DXGI_OUTDUPL_POINTER_POSITION(Structure):
     _fields_ = [("Position", wt.POINT), ("Visible", wt.BOOL)]
 
@@ -152,17 +158,25 @@ class DxgiDuplicationBackend:
                 "DXGI Desktop Duplication is not supported for this output/adapter "
                 "(hybrid-GPU or remote session) — try MonitorBackend.WGC"
             )
-        if hr == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE:
-            raise CapabilityUnavailableError(
+        if hr == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE:  # transient: retried by _recover
+            raise _TransientUnavailableError(
                 "DXGI Desktop Duplication is currently unavailable (too many duplication "
                 "sessions or a full-screen exclusive application)"
             )
         if hr == E_ACCESSDENIED:
             raise AccessDeniedError("desktop duplication denied (secure desktop / lock screen?)")
         check_hr(hr, "IDXGIOutput1::DuplicateOutput")
-        self._dup = ComPtr(out.value, "IDXGIOutputDuplication")
+        dup = ComPtr(out.value, "IDXGIOutputDuplication")
+        try:
+            self._validate_duplication(dup)
+        except BaseException:
+            dup.release()
+            raise
+        self._dup = dup
+
+    def _validate_duplication(self, dup: ComPtr) -> None:
         desc = DXGI_OUTDUPL_DESC()
-        self._dup.call(_DUP_GetDesc, None, (c_void_p,), byref(desc))
+        dup.call(_DUP_GetDesc, None, (c_void_p,), byref(desc))
         if desc.Rotation not in (DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED):
             raise CapabilityUnavailableError(
                 "rotated monitors are not supported by the DXGI backend; use MonitorBackend.WGC"
@@ -198,7 +212,7 @@ class DxgiDuplicationBackend:
             self._dup = None
         try:
             self._duplicate()
-        except (AccessDeniedError, CapabilityUnavailableError, NativeError) as exc:
+        except (AccessDeniedError, _TransientUnavailableError, NativeError) as exc:
             # Secure desktop / mode switch in progress: retry on next acquire.
             log.debug("duplication not yet available: %s", exc)
 
@@ -288,6 +302,9 @@ class DxgiDuplicationBackend:
         if hr < 0:
             log.debug("GetFramePointerShape failed 0x%08X", hr_u32(hr))
             return
-        self._cursor_shape = CursorShape(
-            int(sinfo.Type), int(sinfo.Width), int(sinfo.Height), int(sinfo.Pitch), bytes(buf)
-        )
+        try:
+            self._cursor_shape = CursorShape(
+                int(sinfo.Type), int(sinfo.Width), int(sinfo.Height), int(sinfo.Pitch), bytes(buf)
+            )
+        except ValueError as exc:
+            log.debug("ignoring cursor shape: %s", exc)

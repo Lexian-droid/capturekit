@@ -312,7 +312,13 @@ class WgcBackend:
         latest: ComPtr | None = None
         while True:
             out = c_void_p()
-            self._pool.hcall(_POOL_TryGetNextFrame, (c_void_p,), byref(out), what="TryGetNextFrame")
+            try:
+                self._pool.hcall(
+                    _POOL_TryGetNextFrame, (c_void_p,), byref(out), what="TryGetNextFrame"
+                )
+            except BaseException:
+                close_winrt(latest)  # do not starve the 2-buffer pool
+                raise
             if not out.value:
                 return latest
             if latest is not None:

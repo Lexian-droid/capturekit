@@ -238,10 +238,15 @@ def test_av_sync_flash_and_click(tmp_path, spawn_window, ffmpeg_exe) -> None:
         f"\nvideo onsets {len(v_on)}, audio onsets {len(a_on)}; "
         f"offsets ms {[round(o * 1000, 1) for o in offsets]}"
     )
-    assert len(v_on) >= 4 and len(a_on) >= 4
-    med = float(np.median(offsets))
-    # Click latency through the audio engine and one-frame video quantisation
-    # are inherent; require |offset| within ~1 frame + 45 ms and no trend.
+    assert len(v_on) >= 5 and len(a_on) >= 5
+    # The first asynchronous PlaySound includes one-off warm-up latency (file
+    # open, stream creation): measured 75 ms vs ~30 ms afterwards. Exclude it.
+    steady = np.array(offsets[1:])
+    times = np.array(v_on[1:])
+    med = float(np.median(steady))
+    # Beacon latency (PlaySound, unquantified) and one-frame quantisation are
+    # included in the offset; see docs/capabilities.md (A/V sync: Experimental).
     assert abs(med) < 1 / fps + 0.045, offsets
-    drift = offsets[-1] - offsets[0]
-    assert abs(drift) < 0.03, offsets
+    slope = float(np.polyfit(times, steady, 1)[0])  # seconds of drift per second
+    print(f"median {med * 1000:.1f} ms, trend {slope * 1000:.2f} ms/s")
+    assert abs(slope) < 0.004, offsets  # < 4 ms/s against ±10 ms beacon jitter

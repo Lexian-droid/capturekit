@@ -44,7 +44,7 @@ def find_ffmpeg(explicit: str | None = None) -> str:
             if Path(cand).is_file():
                 return str(Path(cand).resolve())
             raise EncoderNotAvailableError(f"FFmpeg not found at {cand!r}")
-    found = shutil.which("ffmpeg")
+    found = _which_no_cwd("ffmpeg")
     if found:
         return found
     try:
@@ -59,6 +59,24 @@ def find_ffmpeg(explicit: str | None = None) -> str:
         "FFmpeg executable not found: install FFmpeg, set CAPTUREKIT_FFMPEG, or "
         "`pip install capturekit[ffmpeg]`"
     )
+
+
+def _which_no_cwd(name: str) -> str | None:
+    """``shutil.which`` restricted to absolute PATH entries.
+
+    On Windows ``shutil.which`` also searches the current directory first,
+    which would execute a planted ``ffmpeg.exe`` from e.g. a downloads folder.
+    """
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    dirs = [
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if d and os.path.isabs(d) and os.path.normcase(os.path.abspath(d)) != cwd
+    ]
+    found = shutil.which(name, path=os.pathsep.join(dirs)) if dirs else None
+    if found and os.path.normcase(os.path.dirname(os.path.abspath(found))) == cwd:
+        return None
+    return str(Path(found).resolve()) if found else None
 
 
 def _run(args: Sequence[str], timeout: float) -> subprocess.CompletedProcess[str]:

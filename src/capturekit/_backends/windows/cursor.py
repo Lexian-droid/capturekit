@@ -19,6 +19,9 @@ class CursorShape:
         self.height = height
         self.pitch = pitch
         self.data = data
+        row_bytes = (width + 7) // 8 if kind == POINTER_MONOCHROME else width * 4
+        if width <= 0 or height <= 0 or pitch < row_bytes or pitch * height > len(data):
+            raise ValueError(f"malformed pointer shape {kind} {width}x{height} pitch {pitch}")
         raw = np.frombuffer(data, dtype=np.uint8)
         if kind == POINTER_MONOCHROME:
             # height covers AND mask followed by XOR mask, 1 bpp

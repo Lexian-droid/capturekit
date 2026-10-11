@@ -154,9 +154,9 @@ if sys.platform == "win32":
                 if self._closed:
                     return
                 self._closed = True
-                if self._connected:
-                    _k32.FlushFileBuffers(self._h)
-                    _k32.DisconnectNamedPipe(self._h)
+                # Plain CloseHandle: the client still reads buffered data, then
+                # gets EOF. FlushFileBuffers would block until FFmpeg reads
+                # everything (forever if FFmpeg is stalled).
                 _k32.CloseHandle(self._h)
 
         def abort(self) -> None:

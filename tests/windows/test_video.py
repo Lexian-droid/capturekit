@@ -41,6 +41,7 @@ def test_enumeration(spawn_window) -> None:
     assert hwnd in wins
     w = wins[hwnd]
     assert w.title == "ck-enum-test" and w.pid and w.process_name.lower().startswith("python")
+    assert w.class_name == "CapturekitTestWindow"
     assert not w.capture_excluded and not w.is_minimized
     assert ck.get_window(hwnd) == w
     with pytest.raises(ck.TargetNotFoundError):
@@ -174,12 +175,32 @@ def test_capture_excluded_window_is_not_bypassed(spawn_window) -> None:
     assert color_fraction(img, GREEN) < 0.01
 
 
-def test_wgc_monitor_backend() -> None:
+def test_wgc_monitor_backend(spawn_window) -> None:
     mon = ck.list_monitors()[0]
     with ck.ScreenCapture(ck.MonitorSource(0, backend=ck.MonitorBackend.WGC)) as cap:
         f = cap.grab()
         assert cap.backend_name == "wgc-monitor"
         assert f.data.shape == (mon.height, mon.width, 4)
+    hwnd = spawn_window(pattern="quad", x=200, y=200, w=640, h=400, topmost=True)
+    cr = _client_screen_rect(hwnd).translate(-mon.rect.x, -mon.rect.y)
+    src = ck.MonitorSource(0, region=cr, backend=ck.MonitorBackend.WGC)
+    with ck.ScreenCapture(src) as cap:
+        img = cap.grab().data
+    h, w = img.shape[:2]
+    for (y0, x0), c in zip(((0, 0), (0, w // 2), (h // 2, 0), (h // 2, w // 2)), QUAD, strict=True):
+        q = img[y0 + 10 : y0 + h // 2 - 10, x0 + 10 : x0 + w // 2 - 10]
+        assert color_fraction(q, c) > 0.99, c
+
+
+def test_full_window_includes_frame(spawn_window) -> None:
+    hwnd = spawn_window(color="0,200,0", w=640, h=400)
+    with ck.ScreenCapture(ck.WindowSource(hwnd)) as cap:
+        full = cap.grab().data
+    cr = _client_screen_rect(hwnd)
+    w = ck.get_window(hwnd)
+    assert full.shape[:2] == (w.rect.height, w.rect.width)
+    assert full.shape[0] > cr.height + 20  # title bar is included
+    assert color_fraction(full, GREEN) < 0.97
 
 
 def test_frames_iterator_paced() -> None:

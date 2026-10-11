@@ -6,10 +6,12 @@ import queue
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, TypeVar
 
 from . import _platform
 from ._backends.base import VideoBackend
+from .errors import CaptureError, CaptureTimeoutError
 from .sources import VideoSource
 
 T = TypeVar("T")
@@ -29,10 +31,19 @@ class BackendThread:
         )
         self._ready: Future[VideoBackend] = Future()
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._closed = threading.Event()
 
     def start(self, timeout_s: float = 15.0) -> VideoBackend:
         self._thread.start()
-        return self._ready.result(timeout_s)
+        try:
+            return self._ready.result(timeout_s)
+        except FuturesTimeout:
+            # The backend may still finish starting later: make it exit and
+            # close itself instead of leaking a live capture session.
+            self._calls.put(None)
+            raise CaptureTimeoutError(
+                f"capture backend did not start within {timeout_s}s"
+            ) from None
 
     def _run(self) -> None:
         api = _platform.backend()
@@ -42,6 +53,7 @@ class BackendThread:
                 try:
                     backend.start()
                 except BaseException as exc:
+                    backend.close()
                     self._ready.set_exception(exc)
                     return
                 self._ready.set_result(backend)
@@ -62,12 +74,24 @@ class BackendThread:
         except BaseException as exc:
             if not self._ready.done():
                 self._ready.set_exception(exc)
+        finally:
+            self._closed.set()
+            # Never leave a caller waiting on a call that will not run.
+            while True:
+                try:
+                    pending = self._calls.get_nowait()
+                except queue.Empty:
+                    break
+                if pending is not None and not pending[1].done():
+                    pending[1].set_exception(CaptureError("capture was closed"))
 
     def call(self, fn: Callable[[VideoBackend], T], timeout_s: float | None = None) -> T:
-        if not self._thread.is_alive():
-            raise RuntimeError("capture backend thread is not running")
+        if self._closed.is_set() or not self._thread.is_alive():
+            raise CaptureError("capture is closed")
         fut: Future[T] = Future()
         self._calls.put((fn, fut))
+        if self._closed.is_set() and not fut.done():  # raced with shutdown
+            fut.set_exception(CaptureError("capture was closed"))
         return fut.result(timeout_s)
 
     def stop(self, timeout_s: float = 10.0) -> None:

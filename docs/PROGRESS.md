@@ -26,12 +26,29 @@ Authoritative status log. Update at the end of every working session.
 
 ### Latest test results (executed)
 `.venv/Scripts/python -m pytest -q -rs` on Windows 11 26200 / RTX 4050 /
-FFmpeg 7.1 → **56 passed, 0 skipped, 0 failed** (76 s). Includes:
+FFmpeg 7.1 → **75 passed, 0 skipped, 0 failed** (≈2 min; after review fixes). Initial run: 56. Includes:
 unit (27), Windows video (12, incl. occlusion pixel tests), audio (6, incl.
 process isolation 440 Hz vs 1 kHz), recording (11, incl. 24/30/60 fps, pause,
 encoder failure/crash, window closed, A/V sync beacon).
 `ruff check`, `ruff format --check`, `mypy --strict` (src): clean.
 Linux: **no tests executed** (no backend yet; WSL lacks Xvfb).
+
+### Independent review (2026-10-11, architecture/security + test reviewers)
+Fixed: start/stop race leaving audio captured after a "stopped" recorder;
+backend-thread start timeout leaking a live capture session; CONTINUE policy
+ignored for audio device loss; shutdown stalls (~30 s per audio track when
+FFmpeg never started) and unbounded `stop(timeout)`; shutdown stages not
+isolated (FFmpeg could be orphaned); `shutil.which` executing an
+`ffmpeg.exe` from the current directory; pipe close blocking on
+FlushFileBuffers; misleading error after pipe abort; DXGI keeping an
+invalid duplication; unresolved futures after capture close; malformed
+cursor shapes fatal; WGC frame leak on error; audio chunks mutable while
+shared; stray output file after a failed start; wrong `on_audio`
+timestamps when silence and data were emitted together (found by a new test).
+New tests: fake-backend recorder lifecycle suite (platform independent),
+multi-source/mix-mode track content, codec/container/fMP4, encoder
+auto-selection + fallback, isolated pause test, distractor positive control,
+WGC monitor pixels, full-window frame, −500 ppm drift.
 
 ### Bugs found and fixed this session (root causes)
 1. DXGI frames with `LastPresentTime == 0` have an all-zero texture → only

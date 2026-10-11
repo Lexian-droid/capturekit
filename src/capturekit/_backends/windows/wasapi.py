@@ -401,6 +401,9 @@ class WasapiCapture:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(5)
+            if self._thread.is_alive():
+                log.warning("audio thread %r did not stop within 5 s", self.name)
+                return  # keep the reference; it is a daemon thread
             self._thread = None
 
     # -- thread ------------------------------------------------------------

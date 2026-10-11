@@ -39,17 +39,22 @@ class ScreenCapture:
 
     # -- lifecycle -----------------------------------------------------------
     def open(self) -> ScreenCapture:
+        with self._lock:
+            self._open_locked()
+        return self
+
+    def _open_locked(self) -> None:
         if self._worker is None:
             worker = BackendThread(self.source, name="capturekit-capture")
             backend = worker.start()
             self._backend_name = backend.info.name
             self._worker = worker
-        return self
 
     def close(self) -> None:
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker = None
+        with self._lock:
+            if self._worker is not None:
+                self._worker.stop()
+                self._worker = None
 
     def __enter__(self) -> ScreenCapture:
         return self.open()
@@ -66,7 +71,7 @@ class ScreenCapture:
     # -- capture ---------------------------------------------------------------
     def _acquire(self, timeout_s: float) -> AcquiredFrame | None:
         if self._worker is None:
-            self.open()
+            self._open_locked()
         assert self._worker is not None
 
         def fn(b: VideoBackend) -> AcquiredFrame | None:

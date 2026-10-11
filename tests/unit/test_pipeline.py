@@ -113,7 +113,7 @@ def test_aligner_exact_when_clocks_match() -> None:
     assert al.stats.silence_inserted == 0 and al.stats.drift_corrected == 0
 
 
-@pytest.mark.parametrize("ppm", [-300.0, 100.0, 500.0])
+@pytest.mark.parametrize("ppm", [-500.0, -300.0, 100.0, 500.0])
 def test_aligner_corrects_drift_over_one_hour(ppm: float) -> None:
     tl = Timeline()
     tl.start(0)

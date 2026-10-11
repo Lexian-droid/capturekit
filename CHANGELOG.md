@@ -17,3 +17,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: SemVer.
   and lifecycle/error callbacks.
 - `ScreenCapture` for frame grabbing without recording.
 - Capability discovery (`get_capabilities`).
+- Linux X11/Xvfb backend: explicit display selection, Wayland detection,
+  RandR monitor discovery, MIT-SHM monitor capture, XComposite exclusive
+  window capture with Damage, X-Resource PIDs, survivable X server death.
+- Linux audio via the PulseAudio protocol: devices, sessions, microphone,
+  system audio and per-application capture (`parec --monitor-stream`).

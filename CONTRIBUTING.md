@@ -16,6 +16,14 @@ mypy                        # strict, src/
 pytest -rs                  # skips print their reason
 ```
 
+Linux tests start their own private Xvfb servers (never your `$DISPLAY`). On
+Windows, run them in WSL2 (`sudo apt install xvfb x11-utils ffmpeg
+pulseaudio-utils python3-numpy python3-pytest`):
+
+```
+wsl -d Ubuntu -- bash -lc "cd /mnt/<repo path> && PYTHONPATH=src python3 -m pytest -rs"
+```
+
 Hardware tests are marked (`windows`, `gpu`, `audio`, `ffmpeg`, `x11`,
 `xvfb`, `slow`, `interactive`) and skip when the requirement is missing. A
 skipped test is **not** a passing test: when you report results, include the

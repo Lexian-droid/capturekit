@@ -21,8 +21,14 @@ Authoritative status log. Update at the end of every working session.
   fragmented MP4, named-pipe audio tracks, crash handling.
 - Recorder: start/pause/resume/stop, separate/mixed tracks, stats,
   target-lost policies, callbacks-only mode.
-- Docs: README, guides (api, windows, audio, encoding, performance,
-  troubleshooting, linux-status), examples, benchmark scripts.
+- Docs: README, guides (api, windows, linux, audio, encoding, performance,
+  troubleshooting), examples, benchmark scripts.
+- Linux X11/Xvfb: display resolution + Wayland rejection, RandR monitors,
+  MIT-SHM capture, XComposite exclusive window capture (Damage, resize,
+  unmap, destroy), EWMH/XQueryTree enumeration, X-Resource PIDs, error
+  handlers that never exit() for capturekit's own connections.
+- Linux audio (PulseAudio protocol): devices, sessions, microphone, system
+  monitor, per-application `parec --monitor-stream` with live stream tracking.
 
 ### Latest test results (executed)
 `.venv/Scripts/python -m pytest -q -rs` on Windows 11 26200 / RTX 4050 /
@@ -31,7 +37,10 @@ unit (27), Windows video (12, incl. occlusion pixel tests), audio (6, incl.
 process isolation 440 Hz vs 1 kHz), recording (11, incl. 24/30/60 fps, pause,
 encoder failure/crash, window closed, A/V sync beacon).
 `ruff check`, `ruff format --check`, `mypy --strict` (src): clean.
-Linux: **no tests executed** (no backend yet; WSL lacks Xvfb).
+Linux (WSL2 Ubuntu 26.04, Python 3.14, private Xvfb servers, WSLg
+PulseAudio 17): `PYTHONPATH=src python3 -m pytest -rs` → **58 passed, 0
+skipped** (unit 37, X11 14, Pulse 7). Windows suite after Linux work: 75
+passed, 20 skipped (Linux-only tests, with reasons).
 
 ### Independent review (2026-10-11, architecture/security + test reviewers)
 Fixed: start/stop race leaving audio captured after a "stopped" recorder;
@@ -62,12 +71,19 @@ WGC monitor pixels, full-window frame, −500 ppm drift.
 5. ComObject freed inside its own Release thunk → bounded graveyard.
 6. Static window after resize never re-presents → session refresh (D9).
 
+### Linux findings (root causes)
+1. `XShmGetImage` on a pixmap clears the XImage colour masks → validate the
+   pixel format from the Visual.
+2. Xlib's default IO error handler calls `exit(1)` before the per-display
+   exit handler → install a returning IO handler (chained for foreign
+   displays) + `XSetIOErrorExitHandler`.
+3. Test race: window destruction is noticed asynchronously.
+
 ## Next tasks (priority order)
-1. **Linux X11 backend** (monitors/XShm, XComposite windows, explicit
-   display, Wayland detection) — needs Xvfb in WSL (`sudo apt install xvfb
-   x11-utils x11-apps ffmpeg pulseaudio-utils`, user approval required).
-2. Linux audio (parec monitor sources, `--monitor-stream` per-app capture,
-   stream add/remove tracking).
+1. Validate Linux on a native X11 desktop with a WM + compositor (frame
+   capture, `_NET_WM_STATE_HIDDEN`, Automatic redirection coexistence) and
+   on a PipeWire system (`--monitor-stream` via pipewire-pulse).
+2. Linux cursor capture (XFixes) and a multi-monitor Xvfb (+xinerama) test.
 3. A/V sync beacon with low-latency WASAPI render (current beacon's
    `PlaySound` latency is unquantified; measured offset +41..+66 ms).
 4. Multi-monitor / negative-coordinate validation (needs second display or
@@ -77,7 +93,6 @@ WGC monitor pixels, full-window frame, −500 ppm drift.
 7. CI workflow (GitHub Actions windows-latest: unit tests only — no GPU).
 
 ## Blockers
-- Xvfb/PulseAudio not installed in WSL Ubuntu; installing needs approval.
 - No Intel/AMD GPU: QSV/AMF encoders cannot be tested here.
 - Single monitor: multi-monitor paths untested.
 

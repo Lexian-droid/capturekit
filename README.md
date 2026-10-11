@@ -7,9 +7,10 @@ recording to H.264 MKV/MP4 through FFmpeg and hardware encoders.
 
 * Windows 10/11 — DXGI Desktop Duplication, Windows Graphics Capture, WASAPI
   (including per-process loopback). **Implemented and tested.**
-* Linux X11 / Xvfb (explicit display strings such as `":99"`) — XShm,
-  XComposite, PulseAudio/PipeWire. **In development** (see
-  [capabilities](docs/capabilities.md)).
+* Linux X11 / Xvfb (explicit display strings such as `":99"`) — MIT-SHM,
+  XComposite, PulseAudio protocol (per-application capture via monitor
+  streams). **Implemented and tested on Xvfb**; native desktops/PipeWire
+  untested (see [capabilities](docs/capabilities.md)).
 * Wayland-only sessions are detected and rejected; macOS is out of scope.
 
 Pure Python + ctypes (no compiled extension). Runtime dependency: `numpy`.
@@ -81,6 +82,6 @@ and the OS permits it.
 
 ## Status
 
-Alpha. Windows backends are implemented and covered by integration tests that
-run on real hardware; Linux backends are under development. See
-[docs/PROGRESS.md](docs/PROGRESS.md).
+Alpha. Windows and Linux X11 backends are implemented and covered by
+integration tests that run on real hardware (Windows) and private Xvfb
+servers (Linux). See [docs/PROGRESS.md](docs/PROGRESS.md).

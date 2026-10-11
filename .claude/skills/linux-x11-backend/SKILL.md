@@ -37,6 +37,15 @@ CRTCs GetMonitors returns empty — fall back, never crash.
 - FFmpeg x11grab `-window_id` is NOT exclusive capture (plain GetImage on the
   window; obscured areas undefined). Do not use it as a window backend.
 
+## Verified quirks (Xvfb 21.x / libX11 1.8.13, Ubuntu 26.04, 2026-10-11)
+- `XShmGetImage`/`XGetImage` on a **pixmap** return an XImage with zero
+  colour masks (the reply has no visual for pixmaps). Validate the pixel
+  layout from the `Visual` struct at grabber creation, never from the image.
+- Xvfb (stock Ubuntu build) offers Composite, DAMAGE, MIT-SHM, RANDR (one
+  monitor named `screen`), X-Resource (PIDs work), XFIXES, XINERAMA.
+- WSLg PulseAudio 17 (`PULSE_SERVER=unix:/mnt/wslg/PulseServer`) supports
+  `pactl -f json`; its sink is `RDPSink` (audible on the Windows host).
+
 ## Xlib safety
 - Install `XSetErrorHandler` (default handler calls `exit()`); handler is
   process-global — record errors per-display, check after `XSync`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 import numpy as np
@@ -138,8 +139,9 @@ def test_window_close_raises_window_closed(spawn_window) -> None:
         cap.grab()
         close_window(hwnd)
         with pytest.raises(ck.WindowClosedError):
-            for _ in range(20):
-                cap.grab(0.2, new_only=True)
+            for _ in range(30):  # closure is noticed asynchronously
+                with contextlib.suppress(ck.CaptureTimeoutError):
+                    cap.grab(0.2, new_only=True)
 
 
 def test_window_minimized_behaviour(spawn_window) -> None:

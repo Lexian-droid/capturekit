@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "capturekit"
+description = "Python screen, exclusive-window and audio capture/recording for Windows and Linux X11"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "capturekit contributors" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video :: Capture",
+  "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+  "Typing :: Typed",
+]
+dependencies = ["numpy>=1.24"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+ffmpeg = ["imageio-ffmpeg>=0.5"]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.6", "imageio-ffmpeg>=0.5"]
+
+[tool.hatch.version]
+path = "src/capturekit/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/capturekit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "windows: requires Windows 10/11",
+  "x11: requires a reachable X11 server (native or Xvfb)",
+  "xvfb: requires the Xvfb binary (tests start their own server)",
+  "gpu: requires a working GPU/D3D11 device",
+  "audio: requires functioning audio endpoints/servers",
+  "ffmpeg: requires an FFmpeg executable",
+  "slow: long-running or performance tests",
+  "interactive: creates visible windows on the desktop",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003", "SIM103", "SIM105", "SIM108"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["imageio_ffmpeg"]
+ignore_missing_imports = true

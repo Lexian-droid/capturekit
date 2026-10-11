@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.mkv
+*.mp4
+*.wav
+!tests/data/**
+.claude/settings.local.json

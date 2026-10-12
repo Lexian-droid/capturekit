@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.24", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [project]
@@ -27,7 +27,10 @@ ffmpeg = ["imageio-ffmpeg>=0.5"]
 dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.6", "imageio-ffmpeg>=0.5"]
 
 [tool.hatch.version]
-path = "src/capturekit/_version.py"
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/capturekit/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/capturekit"]
